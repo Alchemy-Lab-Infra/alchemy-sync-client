@@ -166,6 +166,12 @@ export class SyncManager {
 	/** What the known store held when this session started, by the engine's
 	 *  local key: how each entity stood when it last settled with the hub. */
 	private known: Map<string, KnownEntry> | null = null;
+	/**
+	 * A start with nothing kept waits for a pull that came in before it adds
+	 * what only this device has (0.4.2). Seeding when the first pull failed (the
+	 * hub out of reach) stamped every old copy now, and those won once it was back.
+	 */
+	private settleAfterPull = false;
 	private readonly regs: Registration[] = [];
 	/** True while applying a remote change, so the store update it causes isn't
 	 *  echoed straight back to the server. */
@@ -228,7 +234,8 @@ export class SyncManager {
 		// Stores register when their module is first imported, which for
 		// route-scoped stores (bookmarks, progress) happens AFTER sign-in. Reconcile
 		// immediately so items already pulled aren't stranded in the engine.
-		if (this.engine) this.reconcile(reg);
+		// (Not before the first pull of a start with nothing kept: sync() does it then.)
+		if (this.engine && !this.settleAfterPull) this.reconcile(reg);
 		// Subscribe fires immediately with the current value; onLocalChange no-ops
 		// while signed out (engine === null), just keeping the snapshot fresh.
 		store.subscribe(() => this.onLocalChange(reg));
@@ -490,6 +497,7 @@ export class SyncManager {
 		this.touched.clear();
 		this.engine = null;
 		this.known = null;
+		this.settleAfterPull = false;
 		this.token = null;
 		this.email = null;
 		this.masterKey = null;
@@ -579,14 +587,12 @@ export class SyncManager {
 		// keeps the old stamp of an entity unchanged since it last settled). The
 		// engine is fresh here, so reconcile() has nothing to replay.
 		if (!firstSettle) for (const reg of this.regs) this.reconcile(reg);
+		this.settleAfterPull = firstSettle;
 		await this.persist();
 		if (!live()) return;
 		this.auth.set({ status: 'signed-in', email });
-		if (firstSettle) {
-			await this.sync();
-			if (!live()) return;
-			for (const reg of this.regs) this.reconcile(reg);
-		}
+		// With nothing kept, sync() adds this device's own after its first pull
+		// that comes in, however many tries that takes.
 		await this.sync();
 		if (live()) this.startTriggers();
 	}
@@ -703,6 +709,14 @@ export class SyncManager {
 				await engine.sync();
 			}
 			if (!live()) return;
+			if (this.settleAfterPull) {
+				// The first pull of a start with nothing kept is in: now what only
+				// this device has goes out, stamped now (it was never on the hub).
+				this.settleAfterPull = false;
+				for (const reg of this.regs) this.reconcile(reg);
+				await engine.sync();
+				if (!live()) return;
+			}
 			this.lastSyncedAt.set(Date.now());
 			this.status.set('idle');
 		} catch {

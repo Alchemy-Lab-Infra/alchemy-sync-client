@@ -66,6 +66,9 @@ brings 0.4 in, or another account — the manager takes what the hub has first
 and only then adds what the hub doesn't have (v0.4.1); seeding first would
 send every old copy as the newest write one last time. A change made on the
 device that never reached the hub before that start gives way to the hub's.
+If that first pull fails (the hub out of reach), nothing of the device's own
+is added until a later pull comes in (v0.4.2): seeded after the failure, the
+old copies were stamped now and won once the hub was back.
 
 0.4.0 also stops a push's acknowledgement from marking a newer write of the
 same entity, made while the push was on its way, as sent.

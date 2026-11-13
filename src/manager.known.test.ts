@@ -20,9 +20,11 @@ const later = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
 function itemHub() {
 	let items: Array<{ id: string; seq: number; blob: string }> = [];
 	let seq = 0;
+	let down = false;
 	const json = (status: number, body: unknown) =>
 		new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 	const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+		if (down) throw new TypeError('fetch failed'); // out of reach, as a fetch reports it
 		const url = new URL(String(input), 'https://hub.test');
 		const method = init?.method ?? 'GET';
 		if (url.pathname === '/api/sync/items' && method === 'POST') {
@@ -44,6 +46,10 @@ function itemHub() {
 		fetchFn,
 		get count() {
 			return items.length;
+		},
+		/** The hub out of reach (down, or no signal). */
+		set down(v: boolean) {
+			down = v;
 		},
 		/** The hub loses everything (a restore from an old backup, say). */
 		wipe() {
@@ -193,6 +199,24 @@ describe('SyncManager with a known store — a device that was closed starts wit
 		await web.sync();
 		expect(web.lib.value).toEqual({ reading: { name: 'Reading now' }, later: { name: 'Later' } });
 		expect(phoneKnown!.entries.size).toBe(2); // and from now on it keeps what settled
+	});
+
+	it('with nothing kept and the hub out of reach at first, adds nothing of its own until a pull comes in', async () => {
+		const { hub, phone, web, phoneKnown } = await twoDevices(true);
+		phone.close();
+		web.lib.set('reading', { name: 'Reading now' });
+		await web.sync();
+		phoneKnown!.entries.clear();
+		hub.down = true;
+		await later();
+		await phone.open(); // its first pull fails
+		await later();
+		hub.down = false;
+		await phone.sync();
+		// Before 0.4.2 the failed start had stamped its old copy now, and it won here.
+		expect(phone.lib.value).toEqual({ reading: { name: 'Reading now' } });
+		await web.sync();
+		expect(web.lib.value).toEqual({ reading: { name: 'Reading now' } });
 	});
 
 	it('only uses what was kept for the same account', async () => {
