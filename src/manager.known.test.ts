@@ -12,6 +12,10 @@ import { SyncEngine, type OutgoingItem, type RemoteItem, type SyncTransport } fr
  * another device was overwritten, and a deletion made meanwhile came back.
  */
 
+/** Time passes between what happens meanwhile and the next start, as it does:
+ *  in the same millisecond the clock breaks the tie on the device id. */
+const later = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+
 /** A hub that stores the latest blob per item id, as the real one does. */
 function itemHub() {
 	let items: Array<{ id: string; seq: number; blob: string }> = [];
@@ -118,13 +122,14 @@ function device(hub: ReturnType<typeof itemHub>, mek: Uint8Array, id: string, in
 async function twoDevices(known: boolean) {
 	const hub = itemHub();
 	const mek = generateMEK();
-	const phone = device(hub, mek, 'phone', { reading: { name: 'Reading' } }, known ? memoryKnownStore() : undefined);
+	const phoneKnown = known ? memoryKnownStore() : undefined;
+	const phone = device(hub, mek, 'phone', { reading: { name: 'Reading' } }, phoneKnown);
 	const web = device(hub, mek, 'web', {}, known ? memoryKnownStore() : undefined);
 	await phone.open();
 	await web.open();
 	await phone.sync();
 	expect(web.lib.value).toEqual({ reading: { name: 'Reading' } });
-	return { hub, mek, phone, web };
+	return { hub, mek, phone, web, phoneKnown };
 }
 
 describe('SyncManager with a known store — a device that was closed starts without undoing others', () => {
@@ -133,6 +138,7 @@ describe('SyncManager with a known store — a device that was closed starts wit
 		phone.close();
 		web.lib.set('reading', { name: 'Reading now' });
 		await web.sync();
+		await later();
 		await phone.open();
 		expect(phone.lib.value).toEqual({ reading: { name: 'Reading now' } });
 		await web.sync();
@@ -144,6 +150,7 @@ describe('SyncManager with a known store — a device that was closed starts wit
 		phone.close();
 		web.lib.remove('reading');
 		await web.sync();
+		await later();
 		await phone.open();
 		expect(phone.lib.value).toEqual({});
 		await web.sync();
@@ -155,6 +162,7 @@ describe('SyncManager with a known store — a device that was closed starts wit
 		phone.close();
 		phone.lib.set('reading', { name: 'Renamed while away' });
 		phone.lib.set('later', { name: 'Later' });
+		await later();
 		await phone.open();
 		await web.sync();
 		expect(web.lib.value).toEqual({ reading: { name: 'Renamed while away' }, later: { name: 'Later' } });
@@ -164,11 +172,27 @@ describe('SyncManager with a known store — a device that was closed starts wit
 		const { hub, mek, phone } = await twoDevices(true);
 		phone.close();
 		hub.wipe();
+		await later();
 		await phone.open();
 		expect(hub.count).toBe(1);
 		const fresh = device(hub, mek, 'fresh', {}, memoryKnownStore());
 		await fresh.open();
 		expect(fresh.lib.value).toEqual({ reading: { name: 'Reading' } });
+	});
+
+	it('with nothing kept yet (the start that brings 0.4 in), takes what the hub has before adding its own', async () => {
+		const { phone, web, phoneKnown } = await twoDevices(true);
+		phone.close();
+		web.lib.set('reading', { name: 'Reading now' });
+		await web.sync();
+		phoneKnown!.entries.clear(); // as a device updating from 0.3.4 has it
+		phone.lib.set('later', { name: 'Later' }); // made here while it was closed
+		await later();
+		await phone.open();
+		expect(phone.lib.value).toEqual({ reading: { name: 'Reading now' }, later: { name: 'Later' } });
+		await web.sync();
+		expect(web.lib.value).toEqual({ reading: { name: 'Reading now' }, later: { name: 'Later' } });
+		expect(phoneKnown!.entries.size).toBe(2); // and from now on it keeps what settled
 	});
 
 	it('only uses what was kept for the same account', async () => {
@@ -185,6 +209,7 @@ describe('SyncManager without a known store — as before 0.4.0', () => {
 		phone.close();
 		web.lib.set('reading', { name: 'Reading now' });
 		await web.sync();
+		await later();
 		await phone.open();
 		await web.sync();
 		// The old copy went out as the newest write: what 0.4.0 lets a host avoid.

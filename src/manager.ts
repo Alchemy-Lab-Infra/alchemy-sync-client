@@ -540,6 +540,7 @@ export class SyncManager {
 		const masterKey = master instanceof Uint8Array ? await importMasterKey(master) : master;
 		const id = ++this.sessionId;
 		const live = () => this.sessionId === id;
+		const account = email.trim().toLowerCase();
 		this.token = token;
 		this.email = email;
 		this.masterKey = masterKey;
@@ -564,19 +565,28 @@ export class SyncManager {
 				onSettled: (records) => live() && this.keepSettled(account, records)
 			}
 		);
-		const account = email.trim().toLowerCase();
 		const known = await this.loadKnown(account);
 		if (!live()) return; // signed out while the engine was made
 		this.engine = engine;
 		this.known = known;
-		// Seed the engine with every current local entity so the first sync pushes
-		// what this device already has (and only that: reconcile() keeps the old
-		// stamp of an entity unchanged since it last settled). The engine is fresh
-		// here, so reconcile() has nothing to replay and reduces to a seed.
-		for (const reg of this.regs) this.reconcile(reg);
+		// Nothing kept yet for this account (the first start with a known store,
+		// so the one that brings 0.4 in, or another account): take what the hub
+		// has first, then add only what it doesn't have. Seeding first would send
+		// every old copy here as the newest write one last time (0.4.1).
+		const firstSettle = known !== null && known.size === 0;
+		// Otherwise seed the engine with every current local entity so the first
+		// sync pushes what this device already has (and only that: reconcile()
+		// keeps the old stamp of an entity unchanged since it last settled). The
+		// engine is fresh here, so reconcile() has nothing to replay.
+		if (!firstSettle) for (const reg of this.regs) this.reconcile(reg);
 		await this.persist();
 		if (!live()) return;
 		this.auth.set({ status: 'signed-in', email });
+		if (firstSettle) {
+			await this.sync();
+			if (!live()) return;
+			for (const reg of this.regs) this.reconcile(reg);
+		}
 		await this.sync();
 		if (live()) this.startTriggers();
 	}

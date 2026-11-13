@@ -61,6 +61,12 @@ Entries are only good for the account they were kept for: a store returns
 none when asked for another one. Without a known store a start behaves as it
 always did.
 
+With a known store that holds nothing yet for the account — the start that
+brings 0.4 in, or another account — the manager takes what the hub has first
+and only then adds what the hub doesn't have (v0.4.1); seeding first would
+send every old copy as the newest write one last time. A change made on the
+device that never reached the hub before that start gives way to the hub's.
+
 0.4.0 also stops a push's acknowledgement from marking a newer write of the
 same entity, made while the push was on its way, as sent.
 
