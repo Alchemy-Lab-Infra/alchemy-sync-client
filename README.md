@@ -39,7 +39,30 @@ an empty library. Hence: one implementation, imported twice.
 | `apiBase` | Where `/api/sync/*` lives — `''` for same-origin, else the service origin |
 | `deviceId` | Stable per-device string; the clock tiebreaker. Must survive restarts |
 | `sessionStore` | Defaults to IndexedDB; supply your own in a Node/Electron-main host |
+| `knownStore` (v0.4.0, optional but wanted) | Where the device keeps what it last settled with the hub — see below |
 | A store per synced type | Anything with `subscribe`/`update`, plus a `SyncDescriptor` |
+
+### Starting without undoing other devices (v0.4.0)
+
+Every start builds a fresh engine. Before 0.4.0 it seeded every local entity
+stamped *now*, so a device that had been closed sent its old copies as the
+newest writes: an edit made meanwhile on another device was overwritten, and
+a deletion made meanwhile came back (SCP Researcher's review, V-100).
+
+Pass a `knownStore` (`load(account)` / `save(account, entries)`, see
+`src/known.ts`; `memoryKnownStore()` for tests) and the manager keeps, per
+entity, the stamp of the write it last settled with the hub and a fingerprint
+of its data. At the next start an entity whose data is unchanged is seeded
+with that old stamp and not sent, so the pull brings it up to date — a newer
+edit or a deletion from another device wins. An entity changed since (or never
+settled) is sent as new, as before. If the first pull shows the hub lacks one
+it was holding as settled, or holds an older write of it, it is sent again.
+Entries are only good for the account they were kept for: a store returns
+none when asked for another one. Without a known store a start behaves as it
+always did.
+
+0.4.0 also stops a push's acknowledgement from marking a newer write of the
+same entity, made while the push was on its way, as sent.
 
 ## Binding it in React (SCP Ultimate)
 

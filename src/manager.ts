@@ -30,7 +30,9 @@
  * refresh endpoint yet answers 404, which is ignored; sessions then simply
  * last as long as the hub's tokens do.
  */
-import { SyncEngine, type RemoteChange } from './engine.js';
+import { SyncEngine, type RemoteChange, type SettledRecord } from './engine.js';
+import { HLC } from './hlc.js';
+import { fingerprint, type KnownEntry, type KnownStore } from './known.js';
 import { HttpSyncTransport, SyncAuthError } from './transport.js';
 import {
 	registerAccount,
@@ -111,6 +113,14 @@ export interface SyncManagerOptions {
 	/** Every request goes through this; defaults to the global fetch. Tests
 	 *  inject a fake hub, hosts with a patched fetch may pass it explicitly. */
 	fetchFn?: FetchFn;
+	/**
+	 * Where this device keeps what it last settled with the hub, per entity
+	 * (known.ts). With one, a start sends only what changed since: an unchanged
+	 * entity keeps its old stamp, so newer writes and deletions from other
+	 * devices reach it instead of being overwritten by a copy stamped now.
+	 * Without one, every start seeds every local entity as new (before 0.4.0).
+	 */
+	knownStore?: KnownStore;
 }
 
 function itemsToMap(items: Array<{ key: string; data: unknown }>): Map<string, string> {
@@ -141,6 +151,7 @@ export class SyncManager {
 	private readonly session: SessionStore;
 	private readonly argon2Params?: Argon2Params;
 	private readonly fetchFn: FetchFn;
+	private readonly knownStore: KnownStore | null;
 
 	constructor(options: SyncManagerOptions) {
 		this.apiBase = options.apiBase;
@@ -148,9 +159,13 @@ export class SyncManager {
 		this.session = options.sessionStore ?? indexedDbSessionStore;
 		this.argon2Params = options.argon2Params;
 		this.fetchFn = options.fetchFn ?? globalThis.fetch;
+		this.knownStore = options.knownStore ?? null;
 	}
 
 	private engine: SyncEngine | null = null;
+	/** What the known store held when this session started, by the engine's
+	 *  local key: how each entity stood when it last settled with the hub. */
+	private known: Map<string, KnownEntry> | null = null;
 	private readonly regs: Registration[] = [];
 	/** True while applying a remote change, so the store update it causes isn't
 	 *  echoed straight back to the server. */
@@ -243,10 +258,16 @@ export class SyncManager {
 		}
 		// 2. Store → engine, but only for entities the engine has never seen, so a
 		//    fresh local write can't clobber a remote record's HLC (or resurrect
-		//    something deleted on another device).
+		//    something deleted on another device). One that is just as it last
+		//    settled with the hub keeps that write's stamp and isn't sent: the
+		//    pull brings it up to date. Anything else is new here, stamped now.
 		let seeded = false;
 		for (const { key, data } of reg.descriptor.toItems(reg.read())) {
-			if (!this.engine.has(reg.type, key)) {
+			if (this.engine.has(reg.type, key)) continue;
+			const known = this.known?.get(SyncEngine.localKey(reg.type, key));
+			if (known && !known.deleted && known.hash === fingerprint(JSON.stringify(data))) {
+				this.engine.seedKnown(reg.type, key, data, HLC.unpack(known.hlc));
+			} else {
 				this.engine.set(reg.type, key, data);
 				seeded = true;
 			}
@@ -468,6 +489,7 @@ export class SyncManager {
 		this.pulling = false;
 		this.touched.clear();
 		this.engine = null;
+		this.known = null;
 		this.token = null;
 		this.email = null;
 		this.masterKey = null;
@@ -538,20 +560,55 @@ export class SyncManager {
 				node: this.deviceId,
 				onRemoteChange: (c) => live() && this.applyRemote(c),
 				onPullStart: () => live() && this.startPull(),
-				onPullEnd: () => live() && this.endPull()
+				onPullEnd: () => live() && this.endPull(),
+				onSettled: (records) => live() && this.keepSettled(account, records)
 			}
 		);
+		const account = email.trim().toLowerCase();
+		const known = await this.loadKnown(account);
 		if (!live()) return; // signed out while the engine was made
 		this.engine = engine;
+		this.known = known;
 		// Seed the engine with every current local entity so the first sync pushes
-		// what this device already has. The engine is fresh here, so reconcile()
-		// has nothing to replay and reduces to a pure seed.
+		// what this device already has (and only that: reconcile() keeps the old
+		// stamp of an entity unchanged since it last settled). The engine is fresh
+		// here, so reconcile() has nothing to replay and reduces to a seed.
 		for (const reg of this.regs) this.reconcile(reg);
 		await this.persist();
 		if (!live()) return;
 		this.auth.set({ status: 'signed-in', email });
 		await this.sync();
 		if (live()) this.startTriggers();
+	}
+
+	/** How each entity stood when it last settled with the hub, for this
+	 *  account; nothing when there is no known store or it can't be read. */
+	private async loadKnown(account: string): Promise<Map<string, KnownEntry> | null> {
+		if (!this.knownStore) return null;
+		try {
+			const entries = await this.knownStore.load(account);
+			return new Map(entries.map((e) => [SyncEngine.localKey(e.type, e.key), e]));
+		} catch {
+			return null; // then every entity is new here, as before 0.4.0
+		}
+	}
+
+	/** Keep what a sync settled, for the next start (known.ts). */
+	private keepSettled(account: string, records: SettledRecord[]): void {
+		const store = this.knownStore;
+		if (!store) return;
+		const entries: KnownEntry[] = records.map((r) => ({
+			type: r.type,
+			key: r.key,
+			hlc: HLC.pack(r.hlc),
+			hash: r.deleted ? '' : fingerprint(JSON.stringify(r.data)),
+			deleted: r.deleted
+		}));
+		void Promise.resolve()
+			.then(() => store.save(account, entries))
+			.catch(() => {
+				// Not kept: the next start sends these again as new, as before 0.4.0.
+			});
 	}
 
 	private async persist(): Promise<void> {

@@ -71,8 +71,18 @@ export {
 // Reactive primitive the manager exposes state through.
 export { Signal, readStore, type Subscriber, type Unsubscriber } from './signal.js';
 
+// What a device last settled with the hub, kept between sessions so a start
+// sends only what changed (SyncManagerOptions.knownStore).
+export { fingerprint, memoryKnownStore, type KnownEntry, type KnownStore } from './known.js';
+
 // Lower level, for anything driving the engine directly.
-export { SyncEngine, MemoryTransport, type SyncTransport, type RemoteChange } from './engine.js';
+export {
+	SyncEngine,
+	MemoryTransport,
+	type SyncTransport,
+	type RemoteChange,
+	type SettledRecord
+} from './engine.js';
 export { HttpSyncTransport, SyncAuthError } from './transport.js';
 export { HLC, type HLCTimestamp } from './hlc.js';
 export { bytesToBase64, base64ToBytes } from './base64.js';
