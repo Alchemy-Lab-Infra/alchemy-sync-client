@@ -12,6 +12,7 @@ pruned here with a pointer.
 <!--
 Pruned (hashes/ids deliberately dropped from Remaining — keep so they are not re-added):
 287f810 — v0.4.0 (known store): walked in SCP Researcher's dogfood file, where it ships
+e1595c3 — v0.4.1 (first start pulls first): the same SCP Researcher walk covers it
 -->
 
 ## Pending human walkthrough
